@@ -55,6 +55,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -75,12 +77,23 @@ private val Green = Color(0xFF35C98A)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val crashPrefs = getSharedPreferences("zwallet_crash", MODE_PRIVATE)
+        val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                crashPrefs.edit().putString("last", android.util.Log.getStackTraceString(e).take(3000)).commit()
+            } catch (_: Throwable) {
+            }
+            oldHandler?.uncaughtException(t, e)
+        }
+        val lastCrash = crashPrefs.getString("last", null)
         val dao = WalletDatabase.get(this).walletDao()
         val prefs = getSharedPreferences("zwallet_prefs", MODE_PRIVATE)
         val savedName = prefs.getString("nickname", null)?.takeIf { it.isNotBlank() }
         setContent {
             val vm: WalletViewModel = viewModel(factory = WalletViewModel.factory(dao))
             var showWelcome by remember { mutableStateOf(true) }
+            var crash by remember { mutableStateOf(lastCrash) }
             ZWalletTheme {
                 Crossfade(targetState = showWelcome, animationSpec = tween(500), label = "root") { welcome ->
                     if (welcome) {
@@ -92,6 +105,29 @@ class MainActivity : ComponentActivity() {
                     } else {
                         WalletScreen(vm)
                     }
+                }
+                crash?.let { trace ->
+                    val clipboard = LocalClipboardManager.current
+                    AlertDialog(
+                        onDismissRequest = { },
+                        title = { Text("ZWallet sempat crash") },
+                        text = {
+                            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                                Text("Tap Salin lalu kirim ke developer, atau screenshot layar ini.", color = Muted, fontSize = 12.sp)
+                                Spacer(Modifier.height(8.dp))
+                                Text(trace, fontSize = 10.sp, lineHeight = 13.sp)
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                crashPrefs.edit().remove("last").apply()
+                                crash = null
+                            }) { Text("Tutup", color = Gold, fontWeight = FontWeight.Bold) }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { clipboard.setText(AnnotatedString(trace)) }) { Text("Salin", color = Muted) }
+                        }
+                    )
                 }
             }
         }
@@ -306,13 +342,13 @@ fun WalletScreen(vm: WalletViewModel) {
                         }
                     }
                 }
-                items(cards, key = { it.id }) { card ->
+                items(cards, key = { "card-${it.id}" }) { card ->
                     CardItem(card, onDelete = { pendingDelete = card }, onIncome = { selectedCard = card; showTransaction = true }, onExpense = { selectedCard = card; showTransaction = true })
                 }
             }
             item { Text("Transaksi terbaru", fontSize = 18.sp, fontWeight = FontWeight.Bold) }
             if (transactions.isEmpty()) item { Text("Belum ada transaksi.", color = Muted, fontSize = 13.sp) }
-            items(transactions.take(30), key = { it.id }) { tx ->
+            items(transactions.take(30), key = { "tx-${it.id}" }) { tx ->
                 val cardName = cards.firstOrNull { it.id == tx.cardId }?.name ?: "Kartu dihapus"
                 TransactionRow(tx, cardName)
             }
